@@ -140,22 +140,32 @@ function resizePetWindowForScale(petWindow, display = {}) {
   petWindow.setBounds(nextBounds);
 }
 
-function getDisplayWorkAreas() {
+function getDisplayLayouts() {
   if (!screen || typeof screen.getAllDisplays !== "function") return [];
   return screen.getAllDisplays()
     .map((display) => {
-      const area = display && (display.workArea || display.bounds);
-      if (!area) return null;
-      const { x, y, width, height } = area;
-      if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
-      return {
-        id: display.id,
-        workArea: {
+      const bounds = display && display.bounds;
+      const workArea = display && (display.workArea || bounds);
+      if (!bounds || !workArea) return null;
+
+      const normalizeRect = (rect) => {
+        const { x, y, width, height } = rect;
+        if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+        return {
           x: Math.round(x),
           y: Math.round(y),
           width: Math.round(width),
           height: Math.round(height)
-        }
+        };
+      };
+      const normalizedBounds = normalizeRect(bounds);
+      const normalizedWorkArea = normalizeRect(workArea);
+      if (!normalizedBounds || !normalizedWorkArea) return null;
+
+      return {
+        id: display.id,
+        bounds: normalizedBounds,
+        workArea: normalizedWorkArea
       };
     })
     .filter(Boolean);
@@ -1103,7 +1113,7 @@ function registerIpc({ getWindows, createPanelWindow, configStore: injectedConfi
       ...loadActivePackageRuntime(userDataDir, config)
     };
   });
-  replaceHandler("pet:get-displays", () => getDisplayWorkAreas());
+  replaceHandler("pet:get-displays", () => getDisplayLayouts());
   replaceHandler("pet:apply-display", (_event, display) => {
     const nextDisplay = display && typeof display === "object" && !Array.isArray(display) ? display : {};
     sendDisplayUpdate(getWindows, nextDisplay);

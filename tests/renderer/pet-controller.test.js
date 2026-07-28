@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createBoundsScheduler,
   createPetController,
-  resolveDragVisualOffset,
+  resolveDisplayForPoint,
+  resolveDragPlacement,
+  resolveDragTopBoundary,
   stopPetEvent
 } from "../../src/renderer/pet/pet-controller";
 
@@ -23,7 +25,8 @@ function createController(overrides = {}) {
     movedBounds: [],
     dragging: [],
     captured: [],
-    released: []
+    released: [],
+    visualOffsets: []
   };
 
   const controller = createPetController({
@@ -39,6 +42,7 @@ function createController(overrides = {}) {
     getWindowPosition: () => ({ x: 10, y: 20 }),
     getWindowSize: () => ({ width: 320, height: 320 }),
     setDraggingClass: (enabled) => calls.dragging.push(enabled),
+    setDragVisualOffset: (offset) => calls.visualOffsets.push(offset),
     setPointerCapture: (pointerId) => calls.captured.push(pointerId),
     releasePointerCapture: (pointerId) => calls.released.push(pointerId),
     hasPointerCapture: () => true,
@@ -122,29 +126,76 @@ describe("createBoundsScheduler", () => {
   });
 });
 
-describe("resolveDragVisualOffset", () => {
-  it("keeps top overflow as a visual offset when the native window is clamped", () => {
-    expect(resolveDragVisualOffset({
+describe("resolveDragPlacement", () => {
+  it("clamps the native window and keeps top overflow as a deterministic visual offset", () => {
+    expect(resolveDragPlacement({
       requestedBounds: { x: 10, y: -120, width: 320, height: 320 },
-      actualPosition: { x: 10, y: 24 },
-      topBoundary: 24
-    })).toEqual({ x: 0, y: -144 });
+      topBoundary: 25
+    })).toEqual({
+      windowBounds: { x: 10, y: 25, width: 320, height: 320 },
+      visualOffset: { x: 0, y: -145 }
+    });
   });
 
-  it("does not offset content while the requested top is inside the actual window top", () => {
-    expect(resolveDragVisualOffset({
+  it("leaves bounds unchanged when the requested top is inside the display work area", () => {
+    expect(resolveDragPlacement({
       requestedBounds: { x: 10, y: 80, width: 320, height: 320 },
-      actualPosition: { x: 10, y: 24 },
-      topBoundary: 24
-    })).toEqual({ x: 0, y: 0 });
+      topBoundary: 25
+    })).toEqual({
+      windowBounds: { x: 10, y: 80, width: 320, height: 320 },
+      visualOffset: { x: 0, y: 0 }
+    });
   });
 
-  it("does not offset ordinary upward motion above the previous async window position", () => {
-    expect(resolveDragVisualOffset({
-      requestedBounds: { x: 10, y: 90, width: 320, height: 320 },
-      actualPosition: { x: 10, y: 100 },
-      topBoundary: 24
-    })).toEqual({ x: 0, y: 0 });
+  it("falls back to the requested bounds when no valid display boundary is available", () => {
+    const requestedBounds = { x: -160, y: -120, width: 320, height: 320 };
+    expect(resolveDragPlacement({ requestedBounds, topBoundary: null })).toEqual({
+      windowBounds: requestedBounds,
+      visualOffset: { x: 0, y: 0 }
+    });
+  });
+});
+
+describe("multi-display drag targeting", () => {
+  const displays = [
+    {
+      id: "main-landscape",
+      bounds: { x: 0, y: 0, width: 2560, height: 1440 },
+      workArea: { x: 0, y: 25, width: 2560, height: 1390 }
+    },
+    {
+      id: "left-portrait",
+      bounds: { x: -1440, y: -1120, width: 1440, height: 2560 },
+      workArea: { x: -1440, y: -1120, width: 1440, height: 2560 }
+    }
+  ];
+
+  it("uses the pointer display at a shared edge instead of the window-owned display", () => {
+    expect(resolveDisplayForPoint(displays, { x: 0, y: 0 })?.id).toBe("main-landscape");
+    expect(resolveDragTopBoundary({
+      displays,
+      pointer: { x: 0, y: 0 },
+      fallback: -1120
+    })).toBe(25);
+
+    expect(resolveDragTopBoundary({
+      displays,
+      pointer: { x: -1, y: 0 },
+      fallback: 25
+    })).toBe(-1120);
+  });
+
+  it("uses the nearest display for points in a layout gap", () => {
+    expect(resolveDisplayForPoint(displays, { x: 10, y: -10 })?.id).toBe("main-landscape");
+  });
+
+  it("falls back cleanly when display topology or pointer data is unavailable", () => {
+    expect(resolveDisplayForPoint(displays, null)).toBeNull();
+    expect(resolveDragTopBoundary({
+      displays: [],
+      pointer: { x: 10, y: 10 },
+      fallback: 42
+    })).toBe(42);
   });
 });
 
@@ -202,7 +253,31 @@ describe("createPetController", () => {
    expect(dragging).toHaveBeenCalledTimes(2);
  });
 
- it("suppresses the accidental click after a drag", () => {
+  it("uses deterministic clamped bounds without reading native position during later drag frames", () => {
+    const getWindowPosition = vi.fn()
+      .mockReturnValueOnce({ x: 10, y: 20 })
+      .mockReturnValueOnce({ x: 999, y: -999 });
+    const { controller, calls } = createController({
+      getWindowPosition,
+      getDragTopBoundary: () => 25
+    });
+
+    controller.startDrag({ button: 0, pointerId: 7, screenX: 100, screenY: 100 });
+    controller.continueDrag({ pointerId: 7, screenX: 130, screenY: -40 });
+    controller.continueDrag({ pointerId: 7, screenX: 140, screenY: -30 });
+
+    expect(getWindowPosition).toHaveBeenCalledTimes(2);
+    expect(calls.movedBounds).toEqual([
+      { x: 40, y: 25, width: 320, height: 320 },
+      { x: 50, y: 25, width: 320, height: 320 }
+    ]);
+    expect(calls.visualOffsets).toEqual([
+      { x: 0, y: -145 },
+      { x: 0, y: -135 }
+    ]);
+  });
+
+  it("suppresses the accidental click after a drag", () => {
     const { controller, calls } = createController();
 
     controller.startDrag({ button: 0, pointerId: 7, screenX: 100, screenY: 100 });
@@ -214,6 +289,7 @@ describe("createPetController", () => {
     expect(calls.returnToDefault).toEqual([]);
     expect(calls.messages).toEqual([]);
     expect(calls.scheduledIdle).toBe(0);
+    expect(calls.visualOffsets.at(-1)).toEqual({ x: 0, y: 0 });
   });
 
   it("only notifies drag cancel on lost pointer capture after an actual drag", () => {
@@ -237,6 +313,7 @@ describe("createPetController", () => {
     expect(dragged.calls.returnToDefault).toEqual([]);
     expect(onDragCancel).toHaveBeenCalledTimes(1);
     expect(dragged.calls.dragging).toEqual([true, false]);
+    expect(dragged.calls.visualOffsets.at(-1)).toEqual({ x: 0, y: 0 });
   });
 
   it("notifies runtime cleanup when pointer capture is lost during an actual drag", () => {

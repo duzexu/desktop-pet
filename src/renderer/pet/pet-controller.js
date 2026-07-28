@@ -1,19 +1,86 @@
 const DRAG_THRESHOLD_PX = 4;
 
-export function resolveDragVisualOffset({ requestedBounds, actualPosition, topBoundary }) {
-  const requestedY = Number(requestedBounds && requestedBounds.y);
-  const actualY = Number(actualPosition && actualPosition.y);
-  const boundaryY = Number.isFinite(Number(topBoundary)) ? Number(topBoundary) : actualY;
-  if (
-    !Number.isFinite(requestedY) ||
-    !Number.isFinite(actualY) ||
-    !Number.isFinite(boundaryY) ||
-    requestedY >= boundaryY
-  ) {
-    return { x: 0, y: 0 };
+function isFiniteRect(rect) {
+  return Boolean(
+    rect &&
+    [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) &&
+    rect.width > 0 &&
+    rect.height > 0
+  );
+}
+
+function containsPoint(rect, point) {
+  // Treat display bounds as half-open so a shared edge belongs to exactly one display.
+  return (
+    point.x >= rect.x &&
+    point.x < rect.x + rect.width &&
+    point.y >= rect.y &&
+    point.y < rect.y + rect.height
+  );
+}
+
+function distanceSquaredToRect(rect, point) {
+  const right = rect.x + rect.width;
+  const bottom = rect.y + rect.height;
+  const dx = point.x < rect.x ? rect.x - point.x : point.x >= right ? point.x - right : 0;
+  const dy = point.y < rect.y ? rect.y - point.y : point.y >= bottom ? point.y - bottom : 0;
+  return dx * dx + dy * dy;
+}
+
+export function resolveDisplayForPoint(displays, point) {
+  if (!point || typeof point !== "object") return null;
+
+  const x = Number(point.x);
+  const y = Number(point.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Array.isArray(displays)) return null;
+
+  const normalizedPoint = { x, y };
+  const validDisplays = displays.filter((display) => isFiniteRect(display && display.bounds));
+  const containingDisplay = validDisplays.find((display) => containsPoint(display.bounds, normalizedPoint));
+  if (containingDisplay) return containingDisplay;
+
+  return validDisplays.reduce((nearest, display) => {
+    const distance = distanceSquaredToRect(display.bounds, normalizedPoint);
+    return !nearest || distance < nearest.distance ? { display, distance } : nearest;
+  }, null)?.display || null;
+}
+
+export function resolveDragTopBoundary({ displays, pointer, fallback }) {
+  const display = resolveDisplayForPoint(displays, pointer);
+  const rawWorkAreaTop = display && display.workArea && display.workArea.y;
+  const workAreaTop = Number(rawWorkAreaTop);
+  if (rawWorkAreaTop !== null && rawWorkAreaTop !== undefined && Number.isFinite(workAreaTop)) {
+    return workAreaTop;
   }
 
-  return { x: 0, y: Math.round(requestedY - Math.max(actualY, boundaryY)) };
+  const fallbackTop = Number(fallback);
+  return fallback !== null && fallback !== undefined && Number.isFinite(fallbackTop) ? fallbackTop : null;
+}
+
+export function resolveDragPlacement({ requestedBounds, topBoundary }) {
+  const originalBounds = requestedBounds && typeof requestedBounds === "object"
+    ? { ...requestedBounds }
+    : requestedBounds;
+  const requestedY = Number(requestedBounds && requestedBounds.y);
+  const rawBoundaryY = topBoundary;
+  const boundaryY = Number(rawBoundaryY);
+  if (
+    !Number.isFinite(requestedY) ||
+    rawBoundaryY === null ||
+    rawBoundaryY === undefined ||
+    !Number.isFinite(boundaryY)
+  ) {
+    return {
+      windowBounds: originalBounds,
+      visualOffset: { x: 0, y: 0 }
+    };
+  }
+
+  const windowY = Math.max(requestedY, boundaryY);
+  return {
+    windowBounds: { ...requestedBounds, y: windowY },
+    visualOffset: { x: 0, y: Math.min(0, Math.round(requestedY - boundaryY)) }
+  };
 }
 
 export function createBoundsScheduler({
@@ -157,12 +224,18 @@ export function createPetController({
         distanceY
       });
       const nextBounds = getBoundsAt(event.screenX, event.screenY, dragSession.offsetX, dragSession.offsetY);
-      setDragVisualOffset(resolveDragVisualOffset({
+      const topBoundary = getDragTopBoundary(event, nextBounds);
+      const placement = resolveDragPlacement({
         requestedBounds: nextBounds,
-        actualPosition: getWindowPosition(),
-        topBoundary: getDragTopBoundary()
-      }));
-      movePetWindow(nextBounds);
+        topBoundary
+      });
+      setDragVisualOffset(placement.visualOffset, {
+        pointer: { x: event.screenX, y: event.screenY },
+        topBoundary,
+        requestedBounds: nextBounds,
+        windowBounds: placement.windowBounds
+      });
+      movePetWindow(placement.windowBounds);
     },
 
     endDrag(event) {
@@ -174,6 +247,7 @@ export function createPetController({
 
       dragSession = null;
       setDraggingClass(false);
+      setDragVisualOffset({ x: 0, y: 0 }, { reason: "drag-end" });
 
       if (didDrag) {
         // 回默认由动画系统内部（clip 播完且等待区空）或 dragEnd 规则决定，
@@ -188,6 +262,7 @@ export function createPetController({
 
       dragSession = null;
       setDraggingClass(false);
+      setDragVisualOffset({ x: 0, y: 0 }, { reason: "pointer-capture-lost" });
 
       if (wasDragging) {
         // 与 endDrag 一致：取消拖拽不强制回默认，交给动画系统内部/规则决定。

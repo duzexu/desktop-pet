@@ -33,8 +33,16 @@ const installSamplePetpack = vi.fn();
 const checkForUpdates = vi.fn();
 const getOfficialLink = vi.fn();
 const getAllDisplays = vi.fn(() => [
-  { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1080 } },
-  { id: 2, workArea: { x: 1920, y: 0, width: 1440, height: 900 } }
+  {
+    id: 1,
+    bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+    workArea: { x: 0, y: 24, width: 1920, height: 1056 }
+  },
+  {
+    id: 2,
+    bounds: { x: -1440, y: -1480, width: 1440, height: 2560 },
+    workArea: { x: -1440, y: -1480, width: 1440, height: 2560 }
+  }
 ]);
 
 const electronMock = {
@@ -143,8 +151,16 @@ describe("registerIpc", () => {
     getPath.mockReturnValue(userDataDir);
     getLoginItemSettings.mockReturnValue({ openAtLogin: false });
     getAllDisplays.mockReturnValue([
-      { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1080 } },
-      { id: 2, workArea: { x: 1920, y: 0, width: 1440, height: 900 } }
+      {
+        id: 1,
+        bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        workArea: { x: 0, y: 24, width: 1920, height: 1056 }
+      },
+      {
+        id: 2,
+        bounds: { x: -1440, y: -1480, width: 1440, height: 2560 },
+        workArea: { x: -1440, y: -1480, width: 1440, height: 2560 }
+      }
     ]);
     petWindow = {
       isDestroyed: vi.fn(() => false),
@@ -1121,14 +1137,22 @@ describe("registerIpc", () => {
     expect(petWindow.setBounds).toHaveBeenCalledWith({ x: 12, y: 24, width: 320, height: 320 });
   });
 
-  it("returns display work areas for multi-screen movement wrapping", () => {
+  it("returns display bounds and work areas for multi-screen drag targeting", () => {
     const { registerIpc } = loadIpcModule();
 
     registerIpc({ getWindows, createPanelWindow });
 
     expect(handlers.get("pet:get-displays")()).toEqual([
-      { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1080 } },
-      { id: 2, workArea: { x: 1920, y: 0, width: 1440, height: 900 } }
+      {
+        id: 1,
+        bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        workArea: { x: 0, y: 24, width: 1920, height: 1056 }
+      },
+      {
+        id: 2,
+        bounds: { x: -1440, y: -1480, width: 1440, height: 2560 },
+        workArea: { x: -1440, y: -1480, width: 1440, height: 2560 }
+      }
     ]);
   });
 });

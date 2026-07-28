@@ -1,6 +1,8 @@
 import {
   createBoundsScheduler,
   createPetController,
+  resolveDisplayForPoint,
+  resolveDragTopBoundary,
   stopPetEvent
 } from "./pet-controller.js";
 import {
@@ -98,6 +100,7 @@ let actionSequenceTimers = [];
 let movePetAnimationFrame = 0;
 let animationMovementRunner = null;
 let cachedDesktopWorkArea = null;
+let cachedDisplayLayouts = [];
 let dragVisualOffset = { x: 0, y: 0 };
 let pendingSingleClickTimer = 0;
 let pomodoroRuntime = null;
@@ -223,12 +226,12 @@ function getScreenWorkArea() {
   };
 }
 
-function getDragTopBoundary() {
+function getFallbackDragTopBoundary() {
   const screenInfo = window.screen || {};
   return resolveFiniteNumber(screenInfo.availTop, window.screenY || 0);
 }
 
-function normalizeDisplayWorkArea(display) {
+function normalizeDisplayRect(display) {
   const area = display && (display.workArea || display.bounds || display);
   if (!area) return null;
 
@@ -246,6 +249,39 @@ function normalizeDisplayWorkArea(display) {
     right: left + width,
     bottom: top + height
   };
+}
+
+function normalizeDisplayLayout(display) {
+  const bounds = normalizeDisplayRect(display && (display.bounds || display.workArea));
+  const workArea = normalizeDisplayRect(display && (display.workArea || display.bounds));
+  if (!bounds || !workArea) return null;
+
+  return {
+    id: display && display.id,
+    bounds: {
+      x: bounds.left,
+      y: bounds.top,
+      width: bounds.right - bounds.left,
+      height: bounds.bottom - bounds.top
+    },
+    workArea: {
+      x: workArea.left,
+      y: workArea.top,
+      width: workArea.right - workArea.left,
+      height: workArea.bottom - workArea.top
+    }
+  };
+}
+
+function getDragTopBoundary(event) {
+  return resolveDragTopBoundary({
+    displays: cachedDisplayLayouts,
+    pointer: {
+      x: event && event.screenX,
+      y: event && event.screenY
+    },
+    fallback: getFallbackDragTopBoundary()
+  });
 }
 
 function unionWorkAreas(workAreas) {
@@ -267,11 +303,13 @@ async function refreshDesktopWorkArea() {
 
   try {
     const displays = await window.desktopPet.pet.getDisplays();
-    const nextWorkArea = unionWorkAreas(Array.isArray(displays) ? displays.map(normalizeDisplayWorkArea) : []);
+    const layouts = Array.isArray(displays) ? displays.map(normalizeDisplayLayout).filter(Boolean) : [];
+    const nextWorkArea = unionWorkAreas(layouts.map((display) => normalizeDisplayRect(display.workArea)));
     if (nextWorkArea) {
+      cachedDisplayLayouts = layouts;
       cachedDesktopWorkArea = nextWorkArea;
       logger.debug("display work area refreshed", {
-        displayCount: Array.isArray(displays) ? displays.length : 0,
+        displayCount: layouts.length,
         workArea: cachedDesktopWorkArea
       });
     }
@@ -311,7 +349,7 @@ function cancelMovePetAnimation() {
   movePetAnimationFrame = 0;
 }
 
-function setDragVisualOffset(offset = {}) {
+function setDragVisualOffset(offset = {}, context = {}) {
   const x = Number.isFinite(Number(offset.x)) ? Math.round(Number(offset.x)) : 0;
   const y = Number.isFinite(Number(offset.y)) ? Math.round(Number(offset.y)) : 0;
   if (dragVisualOffset.x === x && dragVisualOffset.y === y) return;
@@ -323,10 +361,24 @@ function setDragVisualOffset(offset = {}) {
   root.style.setProperty("--pet-drag-visual-y", `${y}px`);
 
   if (wasTopEscaped !== isTopEscaped) {
+    const pointer = context.pointer && {
+      x: Number(context.pointer.x),
+      y: Number(context.pointer.y)
+    };
+    const targetDisplay = resolveDisplayForPoint(cachedDisplayLayouts, pointer);
     logger.debug("drag visual top overflow changed", {
       escaped: isTopEscaped,
-      offset: dragVisualOffset,
-      windowPosition: { x: window.screenX, y: window.screenY }
+      reason: context.reason || "pointer-move",
+      pointer: pointer && Number.isFinite(pointer.x) && Number.isFinite(pointer.y) ? pointer : null,
+      targetDisplay: targetDisplay ? {
+        id: targetDisplay.id,
+        bounds: targetDisplay.bounds,
+        workArea: targetDisplay.workArea
+      } : null,
+      topBoundary: context.topBoundary ?? null,
+      requestedBounds: context.requestedBounds || null,
+      windowBounds: context.windowBounds || null,
+      visualOffset: dragVisualOffset
     });
   }
 }
@@ -1137,6 +1189,7 @@ async function loadInitialConfig() {
 
   try {
     initializeActionExecutor();
+    await refreshDesktopWorkArea();
 
     if (window.desktopPet.pet && window.desktopPet.pet.loadRuntime) {
       applyRuntime(await window.desktopPet.pet.loadRuntime());
@@ -1400,6 +1453,7 @@ function handlePointerDown(event) {
   }
 
   cancelMovePetAnimation();
+  refreshDesktopWorkArea();
   petController.startDrag(event);
 }
 
