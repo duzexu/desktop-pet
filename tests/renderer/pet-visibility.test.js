@@ -93,6 +93,22 @@ describe("pet visibility state", () => {
     })).toBe(true);
   });
 
+  it("keeps mouse passthrough disabled for the entire active drag session", () => {
+    expect(resolveMousePassthroughForPointer({
+      dragActive: true,
+      hidden: false,
+      display: { mousePassthrough: false },
+      pointer: { x: 300, y: 300 },
+      rect: { x: 0, y: 0, width: 20, height: 20 }
+    })).toBe(false);
+
+    expect(resolveMousePassthroughForPointer({
+      dragActive: true,
+      hidden: true,
+      display: { mousePassthrough: true }
+    })).toBe(false);
+  });
+
   it("dispatches hidden mouse leave only after the pointer physically exits hidden bounds", () => {
     const bounds = { x: 0, y: 0, width: 20, height: 20 };
 

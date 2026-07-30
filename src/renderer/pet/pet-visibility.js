@@ -36,11 +36,13 @@ export function applyPetHiddenState({
 }
 
 export function resolveMousePassthroughForPointer({
+  dragActive,
   hidden,
   display = {},
   pointer,
   rect
 } = {}) {
+  if (dragActive) return false;
   if (hidden) return true;
   if (display && display.mousePassthrough) return true;
   if (!pointer || !rect) return true;

@@ -1,6 +1,7 @@
 import {
   createBoundsScheduler,
   createPetController,
+  createPositionScheduler,
   resolveDisplayForPoint,
   resolveDragTopBoundary,
   stopPetEvent
@@ -88,6 +89,7 @@ let hiddenPetBounds = null;
 let hiddenMouseLeaveDispatched = false;
 let spriteMousePassthrough = null;
 let interactionsPaused = false;
+let dragInputActive = false;
 let dragStartedAt = 0;
 let dragStartPosition = null;
 let lastMouseMoveContext = null;
@@ -467,9 +469,25 @@ function cancelAnimationMovement() {
 }
 
 function setSpriteMousePassthrough(enabled) {
-  const nextEnabled = Boolean(enabled);
+  const requestedEnabled = Boolean(enabled);
+  // On Windows, changing native hit testing while Chromium owns pointer capture
+  // can terminate the drag. Keep the window interactive until this input session ends.
+  const nextEnabled = dragInputActive ? false : requestedEnabled;
+  if (requestedEnabled && dragInputActive) {
+    debugRulesLog("mouse-passthrough:suppressed-drag", {
+      requestedMousePassthrough: requestedEnabled,
+      dragInputActive
+    });
+  }
   if (spriteMousePassthrough === nextEnabled) return;
+  const previousEnabled = spriteMousePassthrough;
   spriteMousePassthrough = nextEnabled;
+  logger.debug("mouse passthrough changed", {
+    previousEnabled,
+    requestedEnabled,
+    enabled: nextEnabled,
+    dragInputActive
+  });
   if (window.desktopPet && window.desktopPet.pet && window.desktopPet.pet.setMousePassthrough) {
     window.desktopPet.pet.setMousePassthrough(nextEnabled);
   }
@@ -611,17 +629,22 @@ function getDistanceToRect(point, rect) {
 
 function updateMousePassthroughForPointer(context) {
   const pointer = context && (context.screenPosition || context.mousePosition);
+  const rect = getRenderedMediaScreenRect();
   const mousePassthrough = resolveMousePassthroughForPointer({
+    dragActive: dragInputActive,
     hidden: petHidden,
     display: currentDisplay,
     pointer,
-    rect: getRenderedMediaScreenRect()
+    rect
   });
   debugRulesLog("mouse-passthrough:pointer", {
     eventType: context && context.type,
     eventSource: context && context.eventSource,
     hidden: petHidden,
     configuredMousePassthrough: Boolean(currentDisplay.mousePassthrough),
+    dragInputActive,
+    pointer,
+    rect,
     mousePassthrough
   });
   setSpriteMousePassthrough(mousePassthrough);
@@ -1498,9 +1521,17 @@ const boundsScheduler = createBoundsScheduler({
   onError: (...args) => logger.error(...args)
 });
 
+const dragPositionScheduler = createPositionScheduler({
+  setPosition: (position) => {
+    if (!window.desktopPet || !window.desktopPet.pet || !window.desktopPet.pet.setPosition) return;
+    window.desktopPet.pet.setPosition(position);
+  },
+  onError: (...args) => logger.error(...args)
+});
+
 const petController = createPetController({
   clearIdle: () => window.clearTimeout(stateTimer),
-  movePetWindow: (bounds) => boundsScheduler.request(bounds),
+  movePetWindow: (bounds) => dragPositionScheduler.request({ x: bounds.x, y: bounds.y }),
   getWindowPosition: () => ({ x: window.screenX, y: window.screenY }),
   getWindowSize: () => ({ width: window.outerWidth, height: window.outerHeight }),
   getDragTopBoundary,
@@ -1509,6 +1540,37 @@ const petController = createPetController({
   setPointerCapture: (pointerId) => sprite.setPointerCapture(pointerId),
   releasePointerCapture: (pointerId) => sprite.releasePointerCapture(pointerId),
   hasPointerCapture: (pointerId) => sprite.hasPointerCapture(pointerId),
+  onDragSessionStart: (context) => {
+    const mousePassthroughBefore = spriteMousePassthrough;
+    dragInputActive = true;
+    setSpriteMousePassthrough(false);
+    logger.debug("drag input session started", {
+      ...context,
+      mousePassthroughBefore,
+      windowPosition: { x: window.screenX, y: window.screenY },
+      windowSize: { width: window.outerWidth, height: window.outerHeight },
+      devicePixelRatio: window.devicePixelRatio
+    });
+  },
+  onDragSessionEnd: (context) => {
+    dragPositionScheduler.flushNow();
+    dragInputActive = false;
+    const pointer = {
+      x: context && context.screenX,
+      y: context && context.screenY
+    };
+    logger.debug("drag input session ended", {
+      ...context,
+      pointer,
+      windowPosition: { x: window.screenX, y: window.screenY },
+      mousePassthroughBeforeRestore: spriteMousePassthrough
+    });
+    updateMousePassthroughForPointer({
+      type: "dragSessionEnd",
+      eventSource: "petRenderer",
+      screenPosition: pointer
+    });
+  },
   onClick: (event) => {
     const context = getPointerContext("click", event);
     return evaluateRuntimeEvent(context);
@@ -1555,7 +1617,7 @@ const petController = createPetController({
 sprite.addEventListener("pointerdown", handlePointerDown);
 sprite.addEventListener("pointermove", petController.continueDrag);
 sprite.addEventListener("pointerup", petController.endDrag);
-sprite.addEventListener("pointercancel", petController.endDrag);
+sprite.addEventListener("pointercancel", (event) => petController.endDrag(event, "pointer-cancel"));
 sprite.addEventListener("lostpointercapture", petController.lostPointerCapture);
 
 sprite.addEventListener("click", handlePetClick);

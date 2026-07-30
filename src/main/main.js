@@ -1,9 +1,17 @@
 const { app, dialog, Menu, shell } = require("electron");
+const { configureMacStatusBarMode } = require("./macos-status-bar");
+
+// Configure this before waiting for Electron readiness or creating any windows.
+// Packaged macOS builds also set LSUIElement, while this keeps development runs
+// and older packages from registering as regular Dock applications.
+const macStatusBarMode = configureMacStatusBarMode({ app });
+
 const { registerIpc } = require("./ipc");
 const { createDesktopPetMenu, createMenuActions } = require("./menu");
 const { createConfigStore } = require("./services/config-store");
 const { configureLogger, createLogger, shutdownLogger } = require("./services/logger");
 const { importPetpack } = require("./services/petpack");
+const { loadConfigWithFirstRunLanguage } = require("./services/system-language");
 const { createTray } = require("./tray");
 const { createPanelWindow, createPetWindow, getWindows } = require("./windows");
 const { createGlobalMouseTracker } = require("./global-mouse-tracker");
@@ -85,18 +93,10 @@ function openContextMenu() {
   createNativeMenu().popup({ window: petWindow });
 }
 
-function hideDockIcon() {
-  if (process.platform !== "darwin" || !app.dock || typeof app.dock.hide !== "function") {
-    return;
-  }
-
-  app.dock.hide();
-}
-
 async function boot() {
   userDataDir = app.getPath("userData");
   configStore = createConfigStore(userDataDir);
-  const bootConfig = configStore.load();
+  const { config: bootConfig, detection: languageDetection } = loadConfigWithFirstRunLanguage(configStore, app);
   const showOnboarding = shouldShowOnboarding(bootConfig);
   configureLogger({
     userDataDir,
@@ -107,6 +107,17 @@ async function boot() {
     onboardingVersion: getOnboardingVersion(bootConfig),
     showOnboarding
   });
+  if (process.platform === "darwin") {
+    const logMethod = macStatusBarMode.applied ? logger.info : logger.warn;
+    logMethod("macOS status bar activation configured", macStatusBarMode);
+  }
+  if (languageDetection) {
+    logger.info("Initialized first-run language from system preference", {
+      detectedLocale: languageDetection.locale,
+      language: languageDetection.language,
+      source: languageDetection.source
+    });
+  }
   menuActions = createMenuActions({
     app,
     shell,
@@ -126,7 +137,6 @@ async function boot() {
   trayController = createTray({
     createMenu: createNativeMenu
   });
-  hideDockIcon();
   logger.info("Application boot completed");
 }
 

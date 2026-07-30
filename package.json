@@ -17,7 +17,10 @@
     ],
     "mac": {
       "icon": "build/icon.icns",
-      "identity": null
+      "identity": null,
+      "extendInfo": {
+        "LSUIElement": true
+      }
     },
     "win": {
       "icon": "build/icon.ico"

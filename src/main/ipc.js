@@ -57,6 +57,7 @@ const CHANNELS = [
   "pet:set-mouse-passthrough",
   "pet:set-interactions-paused",
   "pet:set-bounds",
+  "pet:set-position",
   "system:get-launch-at-login",
   "system:set-launch-at-login",
   "system:about:get-info",
@@ -108,6 +109,102 @@ function normalizeBounds(bounds) {
   }
 
   return nextBounds;
+}
+
+function normalizePosition(position) {
+  if (!position || typeof position !== "object" || Array.isArray(position)) {
+    throw new TypeError("Invalid pet position");
+  }
+
+  const x = Number(position.x);
+  const y = Number(position.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new TypeError("Invalid pet position");
+  }
+
+  return {
+    x: Math.round(x),
+    y: Math.round(y)
+  };
+}
+
+function createPetPositionScheduler({
+  getWindows,
+  scheduleTask = setImmediate,
+  now = () => (globalThis.performance && typeof globalThis.performance.now === "function"
+    ? globalThis.performance.now()
+    : Date.now()),
+  schedulerLogger = logger,
+  slowPositionMs = 16,
+  slowLogIntervalMs = 500
+} = {}) {
+  let latestPosition = null;
+  let flushScheduled = false;
+  let coalescedUpdates = 0;
+  let lastSlowLogAt = Number.NEGATIVE_INFINITY;
+
+  function scheduleFlush() {
+    if (flushScheduled || !latestPosition) return;
+    flushScheduled = true;
+    scheduleTask(flush);
+  }
+
+  function flush() {
+    flushScheduled = false;
+    if (!latestPosition) return;
+
+    const position = latestPosition;
+    const mergedUpdateCount = coalescedUpdates;
+    latestPosition = null;
+    coalescedUpdates = 0;
+
+    const petWindow = getPetWindow(getWindows);
+    if (!petWindow || typeof petWindow.setPosition !== "function") return;
+
+    const startedAt = now();
+    try {
+      petWindow.setPosition(position.x, position.y);
+    } catch (error) {
+      schedulerLogger.error("Failed to apply pet drag position", {
+        position,
+        error: error.message || error
+      });
+      scheduleFlush();
+      return;
+    }
+
+    const finishedAt = now();
+    const durationMs = Math.round((finishedAt - startedAt) * 100) / 100;
+    if (durationMs >= slowPositionMs && finishedAt - lastSlowLogAt >= slowLogIntervalMs) {
+      lastSlowLogAt = finishedAt;
+      schedulerLogger.warn("Pet drag position applied slowly", {
+        durationMs,
+        position,
+        coalescedUpdates: mergedUpdateCount
+      });
+    }
+    scheduleFlush();
+  }
+
+  return {
+    request(position) {
+      let nextPosition;
+      try {
+        nextPosition = normalizePosition(position);
+      } catch (error) {
+        schedulerLogger.warn("Ignoring invalid pet drag position", {
+          position,
+          error: error.message || error
+        });
+        return false;
+      }
+
+      if (latestPosition) coalescedUpdates += 1;
+      latestPosition = nextPosition;
+      scheduleFlush();
+      return true;
+    }
+  };
 }
 
 function getDisplayScale(display = {}) {
@@ -707,6 +804,7 @@ function registerIpc({ getWindows, createPanelWindow, configStore: injectedConfi
   });
   logger.info("IPC registered", { userDataDir });
   const approvedAssetPathsBySender = new Map();
+  const petPositionScheduler = createPetPositionScheduler({ getWindows });
 
   replaceListener("asset:approve-dropped", (event, sourcePath) => {
     const senderId = getSenderId(event);
@@ -1165,6 +1263,9 @@ function registerIpc({ getWindows, createPanelWindow, configStore: injectedConfi
       petWindow.setBounds(nextBounds);
     }
   });
+  replaceListener("pet:set-position", (_event, position) => {
+    petPositionScheduler.request(position);
+  });
   replaceHandler("system:get-launch-at-login", () => getLaunchAtLogin(app));
   replaceHandler("system:set-launch-at-login", (_event, enabled) => {
     const nextEnabled = Boolean(enabled);
@@ -1265,8 +1366,10 @@ function registerIpc({ getWindows, createPanelWindow, configStore: injectedConfi
 
 module.exports = {
   CHANNELS,
+  createPetPositionScheduler,
   loadActivePackageRuntime,
   normalizeBounds,
+  normalizePosition,
   registerIpc,
   sanitizePackageId
 };

@@ -19,6 +19,14 @@ describe("GitHub Release packaging", () => {
     expect(config).toContain("artifactName: Desktop-Pet-windows.${ext}");
   });
 
+  test("packages macOS as a status-bar application", () => {
+    const config = readProjectFile("electron-builder.yml");
+    const packageJson = JSON.parse(readProjectFile("package.json"));
+
+    expect(config).toMatch(/extendInfo:\s*\n\s+LSUIElement: true/);
+    expect(packageJson.build.mac.extendInfo).toEqual({ LSUIElement: true });
+  });
+
   test("publishes both native installers after v tags", () => {
     const workflow = readProjectFile(".github/workflows/release.yml");
 

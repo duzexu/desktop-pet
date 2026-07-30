@@ -39,6 +39,10 @@ function mergeConfig(config) {
 function createConfigStore(userDataDir) {
   const configPath = path.join(userDataDir, "config.json");
 
+  function exists() {
+    return fs.existsSync(configPath);
+  }
+
   function ensureUserDataDir() {
     fs.mkdirSync(userDataDir, { recursive: true });
   }
@@ -73,6 +77,7 @@ function createConfigStore(userDataDir) {
 
   return {
     configPath,
+    exists,
     load,
     save
   };

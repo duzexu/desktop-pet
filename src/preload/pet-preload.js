@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld("desktopPet", {
     applyDisplay: (display) => ipcRenderer.invoke("pet:apply-display", display),
     resetPosition: (position) => ipcRenderer.invoke("pet:reset-position", position),
     setBounds: (bounds) => ipcRenderer.invoke("pet:set-bounds", bounds),
+    setPosition: (position) => ipcRenderer.send("pet:set-position", position),
     setMousePassthrough: (enabled) => ipcRenderer.invoke("pet:set-mouse-passthrough", enabled),
     setInteractionsPaused: (enabled) => ipcRenderer.invoke("pet:set-interactions-paused", enabled),
     setAlwaysOnTop: (enabled) => ipcRenderer.invoke("pet:set-always-on-top", enabled),

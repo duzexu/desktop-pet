@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createBoundsScheduler,
   createPetController,
+  createPositionScheduler,
   resolveDisplayForPoint,
   resolveDragPlacement,
   resolveDragTopBoundary,
@@ -126,6 +127,56 @@ describe("createBoundsScheduler", () => {
   });
 });
 
+describe("createPositionScheduler", () => {
+  it("coalesces each frame without waiting for the previous position result", () => {
+    const frames = [];
+    const unresolved = createDeferred();
+    const setPosition = vi.fn(() => unresolved.promise);
+    const scheduler = createPositionScheduler({
+      requestFrame: (callback) => {
+        frames.push(callback);
+        return frames.length;
+      },
+      cancelFrame: vi.fn(),
+      setPosition
+    });
+
+    scheduler.request({ x: 1, y: 1 });
+    scheduler.request({ x: 2, y: 2 });
+    frames.shift()();
+
+    expect(setPosition).toHaveBeenCalledTimes(1);
+    expect(setPosition).toHaveBeenLastCalledWith({ x: 2, y: 2 });
+
+    scheduler.request({ x: 3, y: 3 });
+    expect(frames).toHaveLength(1);
+    frames.shift()();
+
+    expect(setPosition).toHaveBeenCalledTimes(2);
+    expect(setPosition).toHaveBeenLastCalledWith({ x: 3, y: 3 });
+  });
+
+  it("flushes the final drag position immediately", () => {
+    const frames = [];
+    const cancelFrame = vi.fn();
+    const setPosition = vi.fn();
+    const scheduler = createPositionScheduler({
+      requestFrame: (callback) => {
+        frames.push(callback);
+        return 42;
+      },
+      cancelFrame,
+      setPosition
+    });
+
+    scheduler.request({ x: 80, y: 90 });
+    scheduler.flushNow();
+
+    expect(cancelFrame).toHaveBeenCalledWith(42);
+    expect(setPosition).toHaveBeenCalledWith({ x: 80, y: 90 });
+  });
+});
+
 describe("resolveDragPlacement", () => {
   it("clamps the native window and keeps top overflow as a deterministic visual offset", () => {
     expect(resolveDragPlacement({
@@ -237,7 +288,7 @@ describe("createPetController", () => {
    expect(dragEnd).not.toHaveBeenCalled();
  });
 
- it("fires onDragStart only once when threshold is crossed", () => {
+  it("fires onDragStart only once when threshold is crossed", () => {
    const dragStart = vi.fn(() => false);
    const dragging = vi.fn(() => false);
    const { controller } = createController({
@@ -253,12 +304,58 @@ describe("createPetController", () => {
    expect(dragging).toHaveBeenCalledTimes(2);
  });
 
+  it("reports the full pointer input session around a completed drag", () => {
+    const onDragSessionStart = vi.fn();
+    const onDragSessionEnd = vi.fn();
+    const { controller } = createController({ onDragSessionStart, onDragSessionEnd });
+
+    controller.startDrag({ button: 0, pointerId: 7, screenX: 100, screenY: 100 });
+    controller.continueDrag({ pointerId: 7, screenX: 130, screenY: 125 });
+    controller.endDrag({ pointerId: 7, screenX: 132, screenY: 126 });
+
+    expect(onDragSessionStart).toHaveBeenCalledWith({
+      reason: "pointer-down",
+      pointerId: 7,
+      screenX: 100,
+      screenY: 100
+    });
+    expect(onDragSessionEnd).toHaveBeenCalledWith({
+      reason: "pointer-up",
+      pointerId: 7,
+      screenX: 132,
+      screenY: 126,
+      didDrag: true
+    });
+
+    controller.lostPointerCapture({ pointerId: 7 });
+    expect(onDragSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("flushes pointer-up coordinates as the final drag target", () => {
+    const { controller, calls } = createController();
+
+    controller.startDrag({ button: 0, pointerId: 7, screenX: 100, screenY: 100 });
+    controller.continueDrag({ pointerId: 7, screenX: 130, screenY: 125 });
+    controller.endDrag({ pointerId: 7, screenX: 160, screenY: 150 });
+
+    expect(calls.movedBounds.at(-1)).toEqual({
+      x: 70,
+      y: 70,
+      width: 320,
+      height: 320
+    });
+  });
+
   it("uses deterministic clamped bounds without reading native position during later drag frames", () => {
     const getWindowPosition = vi.fn()
       .mockReturnValueOnce({ x: 10, y: 20 })
       .mockReturnValueOnce({ x: 999, y: -999 });
+    const getWindowSize = vi.fn()
+      .mockReturnValueOnce({ width: 320, height: 320 })
+      .mockReturnValue({ width: 999, height: 999 });
     const { controller, calls } = createController({
       getWindowPosition,
+      getWindowSize,
       getDragTopBoundary: () => 25
     });
 
@@ -267,6 +364,7 @@ describe("createPetController", () => {
     controller.continueDrag({ pointerId: 7, screenX: 140, screenY: -30 });
 
     expect(getWindowPosition).toHaveBeenCalledTimes(2);
+    expect(getWindowSize).toHaveBeenCalledTimes(1);
     expect(calls.movedBounds).toEqual([
       { x: 40, y: 25, width: 320, height: 320 },
       { x: 50, y: 25, width: 320, height: 320 }
@@ -318,7 +416,8 @@ describe("createPetController", () => {
 
   it("notifies runtime cleanup when pointer capture is lost during an actual drag", () => {
     const onDragCancel = vi.fn();
-    const { controller } = createController({ onDragCancel });
+    const onDragSessionEnd = vi.fn();
+    const { controller } = createController({ onDragCancel, onDragSessionEnd });
 
     controller.startDrag({ button: 0, pointerId: 7, screenX: 100, screenY: 100 });
     controller.continueDrag({ pointerId: 7, screenX: 130, screenY: 125 });
@@ -330,16 +429,31 @@ describe("createPetController", () => {
       screenX: 130,
       screenY: 125
     });
+    expect(onDragSessionEnd).toHaveBeenCalledWith({
+      reason: "pointer-capture-lost",
+      pointerId: 7,
+      screenX: 130,
+      screenY: 125,
+      didDrag: true
+    });
   });
 
   it("does not notify runtime cleanup when pointer capture is lost before dragging starts", () => {
     const onDragCancel = vi.fn();
-    const { controller } = createController({ onDragCancel });
+    const onDragSessionEnd = vi.fn();
+    const { controller } = createController({ onDragCancel, onDragSessionEnd });
 
     controller.startDrag({ button: 0, pointerId: 7, screenX: 100, screenY: 100 });
     controller.lostPointerCapture();
 
     expect(onDragCancel).not.toHaveBeenCalled();
+    expect(onDragSessionEnd).toHaveBeenCalledWith({
+      reason: "pointer-capture-lost",
+      pointerId: 7,
+      screenX: 100,
+      screenY: 100,
+      didDrag: false
+    });
   });
 });
 

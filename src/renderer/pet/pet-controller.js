@@ -145,6 +145,52 @@ export function createBoundsScheduler({
   };
 }
 
+export function createPositionScheduler({
+  requestFrame = requestAnimationFrame,
+  cancelFrame = cancelAnimationFrame,
+  setPosition,
+  onError = () => {}
+}) {
+  let latestPosition = null;
+  let frameId = null;
+
+  function scheduleFlush() {
+    if (frameId !== null || !latestPosition) return;
+    frameId = requestFrame(flush);
+  }
+
+  function flush() {
+    frameId = null;
+    if (!latestPosition) return;
+
+    const position = latestPosition;
+    latestPosition = null;
+    try {
+      // The drag channel is intentionally fire-and-forget. Waiting for an IPC
+      // result here would reintroduce the Windows round-trip backlog.
+      setPosition(position);
+    } catch (error) {
+      onError("Failed to move pet window", error);
+    }
+    scheduleFlush();
+  }
+
+  return {
+    request(position) {
+      latestPosition = position;
+      scheduleFlush();
+    },
+
+    flushNow() {
+      if (frameId !== null) {
+        cancelFrame(frameId);
+        frameId = null;
+      }
+      flush();
+    }
+  };
+}
+
 export function stopPetEvent(event) {
   event.stopPropagation();
 }
@@ -165,19 +211,42 @@ export function createPetController({
   onDragging = () => false,
   onDragEnd = () => false,
   onDragCancel = () => {},
+  onDragSessionStart = () => {},
+  onDragSessionEnd = () => {},
   dragThresholdPx = DRAG_THRESHOLD_PX
 }) {
   let dragSession = null;
   let didDrag = false;
 
-  function getBoundsAt(screenX, screenY, offsetX, offsetY) {
-    const size = getWindowSize();
+  function getBoundsAt(screenX, screenY, offsetX, offsetY, size) {
     return {
       x: screenX - offsetX,
       y: screenY - offsetY,
       width: size.width,
       height: size.height
     };
+  }
+
+  function moveWindowAt(event, session) {
+    const nextBounds = getBoundsAt(
+      event.screenX,
+      event.screenY,
+      session.offsetX,
+      session.offsetY,
+      session.windowSize
+    );
+    const topBoundary = getDragTopBoundary(event, nextBounds);
+    const placement = resolveDragPlacement({
+      requestedBounds: nextBounds,
+      topBoundary
+    });
+    setDragVisualOffset(placement.visualOffset, {
+      pointer: { x: event.screenX, y: event.screenY },
+      topBoundary,
+      requestedBounds: nextBounds,
+      windowBounds: placement.windowBounds
+    });
+    movePetWindow(placement.windowBounds);
   }
 
   return {
@@ -194,11 +263,18 @@ export function createPetController({
        startScreenX: event.screenX,
        startScreenY: event.screenY,
        lastScreenX: event.screenX,
-       lastScreenY: event.screenY
+       lastScreenY: event.screenY,
+       windowSize: getWindowSize()
      };
 
      setPointerCapture(event.pointerId);
      setDraggingClass(true);
+     onDragSessionStart({
+       reason: "pointer-down",
+       pointerId: event.pointerId,
+       screenX: event.screenX,
+       screenY: event.screenY
+     });
    },
 
    continueDrag(event) {
@@ -223,54 +299,73 @@ export function createPetController({
         distanceX,
         distanceY
       });
-      const nextBounds = getBoundsAt(event.screenX, event.screenY, dragSession.offsetX, dragSession.offsetY);
-      const topBoundary = getDragTopBoundary(event, nextBounds);
-      const placement = resolveDragPlacement({
-        requestedBounds: nextBounds,
-        topBoundary
-      });
-      setDragVisualOffset(placement.visualOffset, {
-        pointer: { x: event.screenX, y: event.screenY },
-        topBoundary,
-        requestedBounds: nextBounds,
-        windowBounds: placement.windowBounds
-      });
-      movePetWindow(placement.windowBounds);
+      moveWindowAt(event, dragSession);
     },
 
-    endDrag(event) {
+    endDrag(event, reason = "pointer-up") {
       if (!dragSession || dragSession.pointerId !== event.pointerId) return;
+
+      const lastDragSession = dragSession;
+      const wasDragging = didDrag;
+      dragSession = null;
+
+      if (
+        wasDragging &&
+        reason === "pointer-up" &&
+        Number.isFinite(event.screenX) &&
+        Number.isFinite(event.screenY)
+      ) {
+        moveWindowAt(event, lastDragSession);
+      }
 
       if (hasPointerCapture(event.pointerId)) {
         releasePointerCapture(event.pointerId);
       }
 
-      dragSession = null;
       setDraggingClass(false);
       setDragVisualOffset({ x: 0, y: 0 }, { reason: "drag-end" });
 
-      if (didDrag) {
+      onDragSessionEnd({
+        reason,
+        pointerId: lastDragSession.pointerId,
+        screenX: Number.isFinite(event.screenX) ? event.screenX : lastDragSession.lastScreenX,
+        screenY: Number.isFinite(event.screenY) ? event.screenY : lastDragSession.lastScreenY,
+        didDrag: wasDragging
+      });
+
+      if (wasDragging) {
         // 回默认由动画系统内部（clip 播完且等待区空）或 dragEnd 规则决定，
         // 手势本身不再强制 returnToDefault（否则会冲掉规则排队的动画）。
         onDragEnd(event);
       }
     },
 
-    lostPointerCapture() {
-      const wasDragging = Boolean(dragSession && didDrag);
+    lostPointerCapture(event) {
+      if (!dragSession) return;
+      if (event && Number.isFinite(event.pointerId) && dragSession.pointerId !== event.pointerId) return;
+
+      const wasDragging = Boolean(didDrag);
       const lastDragSession = dragSession;
 
       dragSession = null;
       setDraggingClass(false);
       setDragVisualOffset({ x: 0, y: 0 }, { reason: "pointer-capture-lost" });
 
+      const cancelContext = {
+        pointerId: lastDragSession.pointerId,
+        screenX: lastDragSession.lastScreenX,
+        screenY: lastDragSession.lastScreenY
+      };
+
+      onDragSessionEnd({
+        reason: "pointer-capture-lost",
+        ...cancelContext,
+        didDrag: wasDragging
+      });
+
       if (wasDragging) {
         // 与 endDrag 一致：取消拖拽不强制回默认，交给动画系统内部/规则决定。
-        onDragCancel({
-          pointerId: lastDragSession.pointerId,
-          screenX: lastDragSession.lastScreenX,
-          screenY: lastDragSession.lastScreenY
-        });
+        onDragCancel(cancelContext);
       }
     },
 

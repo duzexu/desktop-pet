@@ -13,6 +13,8 @@ asarUnpack:
 mac:
   target:
     - dmg
+  extendInfo:
+    LSUIElement: true
   artifactName: Desktop-Pet-mac.${ext}
 win:
   target:

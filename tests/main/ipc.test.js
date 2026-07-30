@@ -167,6 +167,7 @@ describe("registerIpc", () => {
       setAlwaysOnTop: vi.fn(),
       setIgnoreMouseEvents: vi.fn(),
       setBounds: vi.fn(),
+      setPosition: vi.fn(),
       getBounds: vi.fn(() => ({ x: 80, y: 160, width: 320, height: 320 })),
       webContents: {
         send: vi.fn()
@@ -265,6 +266,31 @@ describe("registerIpc", () => {
     expect(petWindow.setIgnoreMouseEvents).toHaveBeenCalledWith(true, { forward: true });
     expect(petWindow.setBounds).toHaveBeenCalledWith({ x: 10, y: 20, width: 320, height: 240 });
     expect(quit).toHaveBeenCalledOnce();
+  });
+
+  it("coalesces high-frequency pet positions and applies only the latest coordinates", async () => {
+    const { registerIpc } = loadIpcModule();
+
+    registerIpc({ getWindows, createPanelWindow });
+    const setPosition = handlers.get("pet:set-position");
+    setPosition(null, { x: 10.2, y: 20.4 });
+    setPosition(null, { x: 30.4, y: 40.6 });
+
+    expect(petWindow.setPosition).not.toHaveBeenCalled();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(petWindow.setPosition).toHaveBeenCalledTimes(1);
+    expect(petWindow.setPosition).toHaveBeenCalledWith(30, 41);
+  });
+
+  it("ignores invalid high-frequency pet positions without moving the window", async () => {
+    const { registerIpc } = loadIpcModule();
+
+    registerIpc({ getWindows, createPanelWindow });
+    handlers.get("pet:set-position")(null, { x: Number.NaN, y: 20 });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(petWindow.setPosition).not.toHaveBeenCalled();
   });
 
   it("downloads and imports the allowlisted sample petpack", async () => {

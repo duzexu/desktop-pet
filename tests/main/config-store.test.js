@@ -24,6 +24,7 @@ describe("createConfigStore", () => {
   it("loads defaults when config file does not exist", () => {
     const store = createConfigStore(userDataDir);
 
+    expect(store.exists()).toBe(false);
     expect(store.load()).toEqual(DEFAULT_CONFIG);
   });
 
@@ -43,6 +44,7 @@ describe("createConfigStore", () => {
       system: { ...DEFAULT_CONFIG.system, language: "en-US" }
     });
     expect(store.load()).toEqual(saved);
+    expect(store.exists()).toBe(true);
     expect(JSON.parse(fs.readFileSync(path.join(userDataDir, "config.json"), "utf8"))).toEqual(saved);
   });
 
