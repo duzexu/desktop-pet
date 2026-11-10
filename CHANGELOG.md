@@ -6,6 +6,13 @@
 
 ## [未发布]
 
+## [0.1.2] - 2026-11-10
+
+### 修复
+
+- 改进 macOS 与 Windows 的启动和拖拽行为，修复多显示器顶部边缘拖拽不稳定的问题。
+- 将「淘淘」体验包下载地址及用户手册图片地址更新为 `pet.zexu.dpdns.org`，修复旧域名失效的问题。
+
 ## [0.1.1] - 2026-07-17
 
 ### 新增
@@ -68,6 +75,7 @@
 - 文件路径、素材扩展名、Manifest 结构和动画引用在导入前进行校验。
 - 配置和包安装使用临时文件或目录进行原子写入。
 
-[未发布]: https://github.com/duzexu/desktop-pet/compare/v0.1.1...HEAD
+[未发布]: https://github.com/duzexu/desktop-pet/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/duzexu/desktop-pet/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/duzexu/desktop-pet/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/duzexu/desktop-pet/releases/tag/v0.1.0

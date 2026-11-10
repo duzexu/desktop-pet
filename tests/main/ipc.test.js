@@ -86,7 +86,7 @@ const configStoreMock = {
 };
 
 const samplePetpackMock = {
-  SAMPLE_PETPACK_URL: "https://pet.zexu.qzz.io/%E6%B7%98%E6%B7%98.petpack",
+  SAMPLE_PETPACK_URL: "https://pet.zexu.dpdns.org/%E6%B7%98%E6%B7%98.petpack",
   installSamplePetpack
 };
 

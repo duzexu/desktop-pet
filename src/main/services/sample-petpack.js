@@ -5,7 +5,7 @@ const { Readable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const { importPetpack } = require("./petpack");
 
-const SAMPLE_PETPACK_URL = "https://pet.zexu.qzz.io/%E6%B7%98%E6%B7%98.petpack";
+const SAMPLE_PETPACK_URL = "https://pet.zexu.dpdns.org/%E6%B7%98%E6%B7%98.petpack";
 
 function toNodeReadable(body) {
   if (!body) {
